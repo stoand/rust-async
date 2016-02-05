@@ -1,0 +1,7 @@
+[package]
+name = "async"
+version = "0.0.1"
+authors = [ "Andreas Stocker <shadowstep7@gmail.com>" ]
+
+[lib]
+crate-type = ["dylib"]
