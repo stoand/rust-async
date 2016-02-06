@@ -6,7 +6,7 @@ Compiler extension for rust that will enable async code without callbacks.
 ```rust
 #[async]
 fn foo() {
-    let bar = async!(db.get_bar());
+    let bar = await!(db.get_bar());
 	println!(bar.x);
 }
 ```
