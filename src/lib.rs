@@ -7,10 +7,13 @@ extern crate rustc_plugin;
 use rustc_plugin::Registry;
 use syntax::ext::base::{Annotatable, ExtCtxt, SyntaxExtension};
 use syntax::codemap::Span;
-use syntax::ast;
 use syntax::parse::token;
 use std::boxed::Box;
 use syntax::feature_gate::AttributeType;
+use syntax::ast;
+use syntax::ptr::P;
+use syntax::ext::build::AstBuilder;
+use std::vec::Vec;
 
 #[plugin_registrar]
 pub fn registrar(reg: &mut Registry) {
@@ -23,29 +26,23 @@ fn async_attribute(cx: &mut ExtCtxt,
                    _: &ast::MetaItem,
                    annotable: Annotatable)
                    -> Annotatable {
-//
-//    match annotable {
-//        Annotatable::Item(item) => {
-//            Annotatable::Item(quote_item!(cx,
-//            fn foo() -> u32 {
-//                let sum = 2 + 2;
-//                println!("{}", sum);
-//                sum
-//            })
-//                                  .unwrap())
-//        }
-//        other => {
-//            cx.span_err(span, "did not get item");
-//            other.clone()
-//        }
-//    };
 
+    // The function item
+    let item = annotable.clone().expect_item();
 
-    Annotatable::Item(quote_item!(cx,
-            fn foo() -> u32 {
-                let sum = 2 + 2;
-                println!("{}", sum);
-                sum
-            })
-                          .unwrap())
+    if let ast::Item_::ItemFn(dec, unsafety, constness, abi, generics, block) = item.node.clone() {
+        let block = cx.block(block.span, generate_callbacks(block.stmts.clone()), block.expr.clone());
+
+        Annotatable::Item(cx.item(item.span.clone(),
+                                  item.ident.clone(),
+                                  item.attrs.clone(),
+                                  ast::Item_::ItemFn(dec, unsafety, constness, abi, generics, block)))
+    } else {
+        cx.span_err(span, "The async annotation only works on functions.");
+        annotable
+    }
+}
+
+fn generate_callbacks(stmts: Vec<P<ast::Stmt>>) -> Vec<P<ast::Stmt>> {
+    vec![]
 }
