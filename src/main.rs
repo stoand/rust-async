@@ -1,6 +1,5 @@
 #![feature(plugin, custom_attribute)]
 #![plugin(async)]
-
 // Run the following command to view expanded code
 // cargo rustc --bin async_tests -- --pretty=expanded
 // -Z unstable-options -o target/debug/main.expanded.rs
@@ -8,6 +7,11 @@
 use std::vec::Vec;
 
 static mut race_i: i32 = 0;
+
+fn main() {
+    let i = 1;
+    let b = 2;
+}
 
 // Create a race condition to make sure the code in the async
 // function executes last
@@ -26,22 +30,28 @@ static mut race_i: i32 = 0;
 // let (user1, user2) = await!(db.get_user(1), b.get_user(2));
 
 
-//trait Future {
-//	fn parallel(callbacks: Vec<&Self>);
-//}
+// trait Future {
+// 	fn parallel(callbacks: Vec<&Self>);
+// }
+//
 
-#[async]
-fn foo() -> i32 {
-    let mut a = 1;
-    a = 2;
-
-	while false {
-		let d = 1;
-		let g = 1;
-	}
-    let c = 1;
-	a = 5;
-}
+// #[async]
+// fn foo() -> Option<i32> {
+//    await(do_somthing());
+//
+//    let i = await(do_somthing());
+//
+//    let mut a = 2;
+//    a = 2;
+//
+//    while false {
+//        let d = 1;
+//        let g = 1;
+//    }
+//
+//    let c = 1;
+//    a = 5;
+// }
 
 // fn foo() {
 // 	let user1 = db.get_user(1);

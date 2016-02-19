@@ -24,8 +24,8 @@ extern crate rustc_plugin;
 pub mod future;
 
 use rustc_plugin::Registry;
-use syntax::ast;
-use syntax::codemap::Span;
+use syntax::ast::*;
+use syntax::codemap::{Span, Spanned};
 use syntax::ext::base::{Annotatable, ExtCtxt, SyntaxExtension};
 use syntax::ext::build::AstBuilder;
 use syntax::ext::quote::rt::ToTokens;
@@ -43,7 +43,7 @@ pub fn registrar(reg: &mut Registry) {
 
 fn async_attribute(cx: &mut ExtCtxt,
                    span: Span,
-                   _: &ast::MetaItem,
+                   _: &MetaItem,
                    annotable: Annotatable)
                    -> Annotatable {
 
@@ -53,21 +53,22 @@ fn async_attribute(cx: &mut ExtCtxt,
     // We cannot simply modify the function item
     // the item, and several of its substructures are wrapped in syntax pointers (syntax::ptr::P)
     // structs wrapped in these pointers need to be recreated by the AstBuilder
-    if let ast::Item_::ItemFn(dec, unsafety, constness, abi, generics, block) = item.node.clone() {
+    if let ItemKind::Fn(dec, unsafety, constness, abi, generics, block) = item.node
+                                                                              .clone() {
         // Recursively modify statements
         let stmts = handle_statements(cx, block.stmts.clone());
         let block = cx.block(block.span, stmts, block.expr.clone());
 
         let ty = match dec.output.clone() {
-            ast::FunctionRetTy::Return(ty) => ty,
+            FunctionRetTy::Ty(ty) => ty,
             _ => quote_ty!(cx, ()),
         };
 
         let mut inputs = dec.inputs.clone();
-        inputs.push(quote_arg!(cx, cb: &FnOnce($ty)));
+        inputs.push(quote_arg!(cx, _gen_async_fn_final_callback: &FnOnce($ty)));
         let dec = cx.fn_decl(inputs, quote_ty!(cx, ()));
 
-        let item_fn = ast::Item_::ItemFn(dec, unsafety, constness, abi, generics, block);
+        let item_fn = ItemKind::Fn(dec, unsafety, constness, abi, generics, block);
 
         // cx.span_err(span, "read printed stuff");
         Annotatable::Item(cx.item(item.span.clone(),
@@ -81,37 +82,35 @@ fn async_attribute(cx: &mut ExtCtxt,
 }
 
 /// Convert statements that contain the await! macro into callbacks
-fn handle_statements(cx: &ExtCtxt, stmts: Vec<P<ast::Stmt>>) -> Vec<P<ast::Stmt>> {
+fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
     if let Some((stmt, stmts_below)) = stmts.split_first() {
         // We only check for await in declaration statments
         // TODO check for await in other places
-        if let ast::Stmt_::StmtDecl(_, _) = stmt.node.clone() {
+        if let StmtKind::Decl(_, _) = stmt.node.clone() {
             // If this is the last async statement we invoke the Future's callback
             let stmts_inside_cb = if stmts_below.is_empty() {
-                handle_statements(cx, stmts_below.to_vec())
+                vec![quote_stmt!(cx,
+                                 _gen_async_fn_final_callback({
+                                     1234
+                                 }))
+                         .unwrap()]
             } else {
-                vec![
-//                quote_stmt!(cx,
-//                                 cb({
-//                                     1234
-//                                 }))
-//                         .unwrap()
-                         ]
+                handle_statements(cx, stmts_below.to_vec())
             };
 
             vec![quote_stmt!(cx, {
-				$stmt
-				if (true) {
-					$stmts_inside_cb
-				}
-            	})
+     			$stmt
+     			if (true) {
+     				$stmts_inside_cb
+     			}
+             	})
                      .unwrap()]
         } else {
             // An expression statement may contain statements within itself depending
             // on the expression type
-            let stmt: P<ast::Stmt> = match stmt.node.clone() {
-                ast::Stmt_::StmtExpr(expr, _) => cx.stmt_expr(handle_expression(cx, expr)),
-                ast::Stmt_::StmtSemi(expr, _) => cx.stmt_expr(handle_expression(cx, expr)),
+            let stmt: Stmt = match stmt.node.clone() {
+                StmtKind::Expr(expr, _) => cx.stmt_expr(handle_expression(cx, expr)),
+                StmtKind::Semi(expr, _) => cx.stmt_expr(handle_expression(cx, expr)),
                 _ => stmt.clone(),
             };
 
@@ -124,7 +123,7 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<P<ast::Stmt>>) -> Vec<P<ast::Stmt>
 
                     stmts
                 }
-                true => vec![quote_stmt!(cx, cb({$stmt})).unwrap()],
+                true => vec![quote_stmt!(cx, _gen_async_fn_final_callback({$stmt})).unwrap()],
             }
         }
     } else {
@@ -132,13 +131,22 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<P<ast::Stmt>>) -> Vec<P<ast::Stmt>
     }
 }
 
-fn handle_expression(cx: &ExtCtxt, expr: P<ast::Expr>) -> P<ast::Expr> {
-    use syntax::ast::Expr_::*;
-
+fn handle_expression(cx: &ExtCtxt, expr: P<Expr>) -> P<Expr> {
     let node = match expr.node.clone() {
-        // 		ExprWhile(expr, block, indent) => {
-        // 			ExprWhile(expr, cx.block(), indent);
-        // 		},
+        ExprKind::While(expr, block, indent) => {
+            ExprKind::While(expr,
+                            cx.block(block.span,
+                                     handle_statements(cx, block.stmts.clone()),
+                                     block.expr.clone()),
+                            indent)
+        }
+        ExprKind::Call(func, args) => {
+            // if quote_path!(cx, async) == func.node.clone() {
+            //     println!("ok");
+            // }
+
+            ExprKind::Call(func, args)
+        }
         n @ _ => n.clone(),
     };
 
