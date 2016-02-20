@@ -13,6 +13,6 @@ fn foo() -> Option<i32> {
 
 #[test]
 fn test_async_fn_return_removed() {
-	assert_eq!(foo(), ());
+	assert_eq!(foo(&|res| {}), ());
 }
 
