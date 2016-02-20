@@ -1,3 +1,10 @@
 language: rust
 rust:
   - nightly
+
+notifications:
+  email:
+    recipients:
+      - shadowstep7@gmail.com
+    on_success: [always|never|change] # default: change
+    on_failure: [always|never|change] # default: always
