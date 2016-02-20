@@ -7,12 +7,9 @@
 fn main() {}
 
 #[async]
-fn foo() -> Option<i32> {
-//    let a = await!(test(1));
-}
+fn foo() -> Option<i32> {}
 
 #[test]
 fn test_async_fn_return_removed() {
-	assert_eq!(foo(&|res| {}), ());
+    assert_eq!(foo(&|res| {}), ());
 }
-
