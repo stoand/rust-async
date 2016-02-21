@@ -35,6 +35,7 @@ use syntax::ext::quote::rt::ToTokens;
 use syntax::parse::token;
 use syntax::ptr::P;
 use std::vec::Vec;
+use std::iter::Iterator;
 
 use std::boxed::Box;
 
@@ -42,31 +43,7 @@ use std::boxed::Box;
 pub fn registrar(reg: &mut Registry) {
     reg.register_syntax_extension(token::intern("async"),
                                   SyntaxExtension::MultiModifier(Box::new(async_attribute)));
-
-    reg.register_macro("await", await_mac_to_fn);
 }
-
-/* FIXME: allows users to get a concrete error when a macro is not properly processed by #[async]*/
-
-/// Await is more legible for programmers if it is marked
-/// by a macro instead of a function with an arbirary name.
-/// Macros are processed before syntax extensions however, so we 
-/// need to define this macro and so it can replace itself with a
-/// specifically named function which the #[async] syntax extension can process
-fn await_mac_to_fn(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> Box<MacResult + 'static> {
-
-    if args.len() != 2 {
-        cx.span_err(sp,
-                    &"Argument should be a function name with parameters, ie: test(1, 2)");
-        return DummyResult::any(sp);
-    }
-
-    let fn_name = args[0].clone();
-    let fn_params = args[1].clone();
-
-    MacEager::expr(quote_expr!(cx, __AWAIT_($fn_name$fn_params)))
-}
-
 
 /// Marking a function with this attribute allows await calls within it to be processed
 fn async_attribute(cx: &mut ExtCtxt,
@@ -113,6 +90,7 @@ fn async_attribute(cx: &mut ExtCtxt,
         annotable
     }
 }
+
 /// Convert statements that contain the await function into callbacks
 fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
     // Try to take first statement from given statements
@@ -131,7 +109,7 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
                                 PatKind::Ident(binding_mode, Spanned {node: ident, .. }, _)) =
                                (local.init.clone(), local.pat.node.clone()) {
                             // retrieve function call from inside awaits in expression
-                            let (expr, await_functions) = handle_expression(cx, &expr);
+                            let (expr, await_functions) = handle_expression(cx, expr);
 
                             // Is the variable mutable?
                             let mutable = match binding_mode {
@@ -171,7 +149,7 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
                     DeclKind::Item(item) => {
                         let (item, await_functions) = match item.node.clone() {
                             ItemKind::Const(ty, expr) => {
-                                let (expr, await_functions) = handle_expression(cx, &expr);
+                                let (expr, await_functions) = handle_expression(cx, expr);
                                 let item = cx.item_const(item.span, item.ident, ty, expr);
                                 (item, await_functions)
                             }
@@ -182,14 +160,17 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
                 }
             }
             StmtKind::Expr(expr, node_id) => {
-                let (expr, await_functions) = handle_expression(cx, &expr);
+                let (expr, await_functions) = handle_expression(cx, expr);
                 (StmtKind::Expr(expr, node_id), await_functions)
             }
             StmtKind::Semi(expr, node_id) => {
-                let (expr, await_functions) = handle_expression(cx, &expr);
+                let (expr, await_functions) = handle_expression(cx, expr);
                 (StmtKind::Semi(expr, node_id), await_functions)
             }
-            other @ _ => (other, Vec::new()), 
+            StmtKind::Mac(mac, _, _) => {
+                let (expr, await_functions) = handle_macro(cx, mac.span, mac.node.clone());
+                (StmtKind::Expr(expr.clone(), expr.id), await_functions)
+            }
         };
 
         if await_functions.is_empty() {
@@ -217,6 +198,8 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
     }
 }
 
+
+
 /// Takes and expression and if it's an await call it adds
 /// it to a vector in which all async function call syntax is are stored.
 /// If the expression is not an await call it checks expressions
@@ -224,7 +207,57 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
 ///
 /// Returns a tuple containing the modified expression and a vector of
 /// all found async functions
-fn handle_expression<'a>(cx: &ExtCtxt, expr: &'a Expr) -> (P<Expr>, Vec<Expr>) {
-    let expr = cx.expr(expr.span, expr.node.clone());
-    (quote_expr!(cx, ($expr)), vec![])
+fn handle_expression(cx: &ExtCtxt, expr: P<Expr>) -> (P<Expr>, Vec<Expr>) {
+
+    // (quote_expr!(cx, [$expr]), Vec::new())
+    match expr.node.clone() {
+        // await may still be in macro form or already converted
+        // (depends on it's location in code)
+        ExprKind::Mac(mac) => handle_macro(cx, mac.span, mac.node),
+//        ExprKind::Call(_, _) => (quote_expr!(cx, call1), Vec::new()),
+        _ => (expr, Vec::new()),
+    }
+}
+
+fn handle_macro(cx: &ExtCtxt, span: Span, mac: Mac_) -> (P<Expr>, Vec<Expr>) {
+    // Macro should always have one path segment
+    let identifier = mac.path.segments.first().unwrap().identifier;
+
+    let inner_tokens = mac.tts.clone();
+    // If this macro in our await macro we completely replace it with a variable
+    // if not, we put the variable in the foreign macro wherever there are await macros within it
+    if cx.ident_of("await").name == identifier.name {
+        // The inner function must also be checked for "await"
+        let (inner_tokens_expr, mut await_functions) =
+            handle_expression(cx, quote_expr!(cx, $inner_tokens));
+        // Add this function to the list of function that will be converted to callbacks
+        await_functions.push((*inner_tokens_expr).clone());
+
+        let var_ident = cx.ident_of(&format!("_autogen{}", await_functions.len()));
+
+        (quote_expr!(cx, $var_ident), await_functions)
+    } else {
+        // Parse macro arguments into as a tuple
+        // then search expressions inside tuple for await functions
+        if let ExprKind::Tup(expressions) = quote_expr!(cx, ($inner_tokens)).node.clone() {
+        	let mut processed_expressions = Vec::new();
+        	let mut all_await_functions = Vec::new();
+
+			for expr in expressions {
+				let (expr, await_functions) = handle_expression(cx, expr);
+				all_await_functions.append(&mut await_functions.clone());
+
+				// Add comma if we already have and expression
+				if !processed_expressions.is_empty() {
+					processed_expressions.push(TokenTree::Token(span, token::Token::Comma));
+				}
+
+				processed_expressions.append(&mut expr.to_tokens(cx).clone());
+			}
+
+            (quote_expr!(cx, $identifier!($processed_expressions)), Vec::new())
+        } else {
+            (quote_expr!(cx, $identifier!($inner_tokens)), Vec::new())
+        }
+    }
 }
