@@ -27,17 +27,15 @@ extern crate syntax;
 extern crate rustc_plugin;
 
 use rustc_plugin::Registry;
+use std::boxed::Box;
+use std::vec::Vec;
 use syntax::ast::*;
 use syntax::codemap::{Span, Spanned};
-use syntax::ext::base::{Annotatable, ExtCtxt, SyntaxExtension, MacResult, DummyResult, MacEager};
+use syntax::ext::base::{Annotatable, ExtCtxt, SyntaxExtension};
 use syntax::ext::build::AstBuilder;
 use syntax::ext::quote::rt::ToTokens;
 use syntax::parse::token;
 use syntax::ptr::P;
-use std::vec::Vec;
-use std::iter::Iterator;
-
-use std::boxed::Box;
 
 #[plugin_registrar]
 pub fn registrar(reg: &mut Registry) {
@@ -60,23 +58,31 @@ fn async_attribute(cx: &mut ExtCtxt,
     // structs wrapped in these pointers need to be recreated by the AstBuilder
     if let ItemKind::Fn(dec, unsafety, constness, abi, generics, block) = item.node
                                                                               .clone() {
-        // Recursively modify statements
-        let stmts = handle_statements(cx, block.stmts.clone());
-        let block = cx.block(block.span, stmts, block.expr.clone());
 
         // Get function return type
-        let ty = match dec.output.clone() {
-            FunctionRetTy::Ty(ty) => ty,
-            _ => quote_ty!(cx, ()),
+        let (ty, final_cb, inputs) = match dec.output.clone() {
+            FunctionRetTy::Ty(ty) => {
+                // Recreate the function declaration with an additional callback as an input
+                // and a return type of ()
+                let mut inputs = dec.inputs.clone();
+                inputs.push(quote_arg!(cx, _final_callback: &Fn($ty)));
+
+                (ty, true, inputs)
+            }
+            _ => (quote_ty!(cx, ()), false, dec.inputs.clone()),
         };
 
-
-        // Recreate the function declaration with an additional callback as an input
-        // and a return type of ()
-        let mut inputs = dec.inputs.clone();
-        inputs.push(quote_arg!(cx, _gen_async_fn_final_callback: &FnOnce($ty)));
-
         let dec = cx.fn_decl(inputs, quote_ty!(cx, ()));
+
+        let mut stmts = block.stmts.clone();
+        // If there is a final expr, convert it to a return statement
+        if let Some(expr) = block.expr.clone() {
+            stmts.push(cx.stmt_expr(cx.expr(expr.span, ExprKind::Ret(Some(expr)))));
+        }
+
+        // Recursively modify statements
+        let stmts = handle_statements(cx, stmts, final_cb);
+        let block = cx.block(block.span, stmts, None);
 
         // Recreate the function with the new declaration and a modified block
         let item_fn = ItemKind::Fn(dec, unsafety, constness, abi, generics, block);
@@ -92,15 +98,16 @@ fn async_attribute(cx: &mut ExtCtxt,
 }
 
 /// Convert statements that contain the await function into callbacks
-fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
+fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>, final_cb: bool) -> Vec<Stmt> {
     // Try to take first statement from given statements
     // if there is no first statement we were given an empty vector
     // so we stop handeling statements
-    if let Some((stmt_span, stmts_below)) = stmts.split_first() {
+    if let Some((stmt, stmts_below)) = stmts.split_first() {
+        let span = stmt.span;
+
         // Replace await calls inside statements and retrieve the function call
         // syntax that was inside them
-
-        let (stmt, await_functions) = match stmt_span.node.clone() {
+        let (stmt_kind, async_functions) = match stmt.node.clone() {
             StmtKind::Decl(decl_span, node_id) => {
                 match decl_span.node.clone() {
                     // Let declarations
@@ -109,7 +116,7 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
                                 PatKind::Ident(binding_mode, Spanned {node: ident, .. }, _)) =
                                (local.init.clone(), local.pat.node.clone()) {
                             // retrieve function call from inside awaits in expression
-                            let (expr, await_functions) = handle_expression(cx, expr);
+                            let (expr, async_functions) = handle_expr(cx, expr, false);
 
                             // Is the variable mutable?
                             let mutable = match binding_mode {
@@ -139,7 +146,7 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
                                 }
                             };
 
-                            (stmt, await_functions)
+                            (stmt, async_functions)
                         } else {
                             // If we don't have an 'Ident' pattern there is nothing we can do
                             (StmtKind::Decl(decl_span, node_id), Vec::new())
@@ -147,58 +154,87 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
                     }
                     // Const declarations
                     DeclKind::Item(item) => {
-                        let (item, await_functions) = match item.node.clone() {
+                        let (item, async_functions) = match item.node.clone() {
                             ItemKind::Const(ty, expr) => {
-                                let (expr, await_functions) = handle_expression(cx, expr);
+                                let (expr, async_functions) = handle_expr(cx, expr, false);
                                 let item = cx.item_const(item.span, item.ident, ty, expr);
-                                (item, await_functions)
+                                (item, async_functions)
                             }
                             _ => (item, Vec::new()),
                         };
-                        (cx.stmt_item(decl_span.span, item).node, await_functions)
+                        (cx.stmt_item(decl_span.span, item).node, async_functions)
                     }
                 }
             }
             StmtKind::Expr(expr, node_id) => {
-                let (expr, await_functions) = handle_expression(cx, expr);
-                (StmtKind::Expr(expr, node_id), await_functions)
+                let (expr, async_functions) = handle_expr(cx, expr, final_cb);
+                (StmtKind::Expr(expr, node_id), async_functions)
             }
             StmtKind::Semi(expr, node_id) => {
-                let (expr, await_functions) = handle_expression(cx, expr);
-                (StmtKind::Semi(expr, node_id), await_functions)
+                let (expr, async_functions) = handle_expr(cx, expr, final_cb);
+                (StmtKind::Semi(expr, node_id), async_functions)
             }
             StmtKind::Mac(mac, _, _) => {
-                let (expr, await_functions) = handle_macro(cx, mac.span, mac.node.clone());
-                (StmtKind::Expr(expr.clone(), expr.id), await_functions)
+                let (expr, async_functions) = handle_macro(cx, mac.span, mac.node.clone());
+                (StmtKind::Expr(expr.clone(), expr.id), async_functions)
             }
         };
 
-        if await_functions.is_empty() {
-            // TODO add callbacks
-            let mut stmts = Vec::new();
-            stmts.push(Spanned {
-                node: stmt,
-                span: stmt_span.span,
-            });
-            stmts.append(&mut handle_statements(cx, stmts_below.to_vec()));
+        let mut stmt = Spanned {
+            node: stmt_kind,
+            span: span,
+        };
 
-            stmts
+        let stmts_below = handle_statements(cx, stmts_below.to_vec(), final_cb);
+
+        if async_functions.is_empty() {
+            // Call the final callback if we are on the last statement
+            if stmts_below.is_empty() {
+                vec![stmt]
+            } else {
+                let mut stmts = Vec::new();
+                stmts.push(stmt);
+                stmts.append(&mut handle_statements(cx, stmts_below, final_cb));
+
+                stmts
+            }
         } else {
-            let mut stmts = Vec::new();
-            stmts.push(Spanned {
-                node: stmt,
-                span: stmt_span.span,
-            });
-            stmts.append(&mut handle_statements(cx, stmts_below.to_vec()));
+            // Wrap stmt in callbacks
+            for (i, expr) in async_functions.iter().enumerate().rev() {
+                let var_ident = cx.ident_of(&format!("_autogen{}", i));
 
-            stmts
+                if let ExprKind::Call(func, args) = expr.node.clone() {
+                    // Add callback as final argument
+                    let mut args_with_cb = args.clone();
+
+                    let mut stmts_in_cb = Vec::new();
+
+                    // Call the final callback if we are on the last statement
+                    if stmts_below.is_empty() {
+                        stmts_in_cb.push(stmt);
+                        // If this is the last callback we're processing we append the remaining statements
+                    } else if i == async_functions.len() - 1 {
+                        stmts_in_cb.push(stmt);
+                        stmts_in_cb.append(&mut stmts_below.clone());
+                    } else {
+                        stmts_in_cb.push(stmt);
+                    };
+
+                    args_with_cb.push(quote_expr!(cx, &|$var_ident| {
+						 $stmts_in_cb
+					}));
+
+                    stmt = cx.stmt_expr(cx.expr_call(span, func, args_with_cb));
+                }
+            }
+
+            vec![stmt]
         }
+
     } else {
         Vec::new()
     }
 }
-
-
 
 /// Takes and expression and if it's an await call it adds
 /// it to a vector in which all async function call syntax is are stored.
@@ -207,14 +243,63 @@ fn handle_statements(cx: &ExtCtxt, stmts: Vec<Stmt>) -> Vec<Stmt> {
 ///
 /// Returns a tuple containing the modified expression and a vector of
 /// all found async functions
-fn handle_expression(cx: &ExtCtxt, expr: P<Expr>) -> (P<Expr>, Vec<Expr>) {
+fn handle_expr(cx: &ExtCtxt, expr: P<Expr>, ret_to_cb: bool) -> (P<Expr>, Vec<Expr>) {
+    let span = expr.span;
 
-    // (quote_expr!(cx, [$expr]), Vec::new())
+    // Search for await macros in all expression types
     match expr.node.clone() {
-        // await may still be in macro form or already converted
-        // (depends on it's location in code)
-        ExprKind::Mac(mac) => handle_macro(cx, mac.span, mac.node),
-//        ExprKind::Call(_, _) => (quote_expr!(cx, call1), Vec::new()),
+        ExprKind::Box(expr) => {
+            let (expr, async_functions) = handle_expr(cx, expr, false);
+            (cx.expr(span, ExprKind::Box(expr)), async_functions)
+        }
+        ExprKind::Ret(Some(expr)) => {
+            if ret_to_cb {
+                let (expr, async_functions) = handle_expr(cx, expr, false);
+                (quote_expr!(cx, _final_callback($expr)), async_functions)
+            } else {
+                let (expr, async_functions) = handle_expr(cx, expr, false);
+                (cx.expr(span, ExprKind::Ret(Some(expr))), async_functions)
+            }
+        }
+        ExprKind::Ret(None) => {
+            if ret_to_cb {
+                (expr, Vec::new())
+            } else {
+                (quote_expr!(cx, _final_callback()), Vec::new())
+            }
+        }
+        ExprKind::Tup(expressions) => {
+            let mut all_async_functions = Vec::new();
+            let mut processed_expressions = Vec::new();
+
+            for expr in expressions {
+                let (processed_expr, async_functions) = handle_expr(cx, expr, false);
+                processed_expressions.push(processed_expr);
+                all_async_functions.append(&mut async_functions.clone());
+            }
+
+            (cx.expr(span, ExprKind::Tup(processed_expressions)),
+             all_async_functions)
+        }
+        ExprKind::Call(func, args) => {
+            let mut all_async_functions = Vec::new();
+            let mut processed_args = Vec::new();
+
+            for expr in args {
+                let (processed_expr, async_functions) = handle_expr(cx, expr, false);
+                processed_args.push(processed_expr);
+                all_async_functions.append(&mut async_functions.clone());
+            }
+
+            (cx.expr(span, ExprKind::Call(func, processed_args)),
+             all_async_functions)
+        }
+        // 		ExprKind::InPlace(expr1, expr2) => {
+        // 			ExprKind::InPlace(handle_expr(cx, expr1), handle_expr(cx, expr2))
+        // 			let (expr1, async_functions) = handle_expr(cx, expr);
+        // 			let (expr1, async_functions) = handle_expr(cx, expr);
+        // 		}
+        ExprKind::Mac(mac) => handle_macro(cx, span, mac.node),
         _ => (expr, Vec::new()),
     }
 }
@@ -228,34 +313,36 @@ fn handle_macro(cx: &ExtCtxt, span: Span, mac: Mac_) -> (P<Expr>, Vec<Expr>) {
     // if not, we put the variable in the foreign macro wherever there are await macros within it
     if cx.ident_of("await").name == identifier.name {
         // The inner function must also be checked for "await"
-        let (inner_tokens_expr, mut await_functions) =
-            handle_expression(cx, quote_expr!(cx, $inner_tokens));
+        let (inner_tokens_expr, mut async_functions) = handle_expr(cx,
+                                                                   quote_expr!(cx, $inner_tokens),
+                                                                   false);
+
+        let var_ident = cx.ident_of(&format!("_autogen{}", async_functions.len()));
         // Add this function to the list of function that will be converted to callbacks
-        await_functions.push((*inner_tokens_expr).clone());
+        async_functions.push((*inner_tokens_expr).clone());
 
-        let var_ident = cx.ident_of(&format!("_autogen{}", await_functions.len()));
-
-        (quote_expr!(cx, $var_ident), await_functions)
+        (quote_expr!(cx, $var_ident), async_functions)
     } else {
         // Parse macro arguments into as a tuple
         // then search expressions inside tuple for await functions
         if let ExprKind::Tup(expressions) = quote_expr!(cx, ($inner_tokens)).node.clone() {
-        	let mut processed_expressions = Vec::new();
-        	let mut all_await_functions = Vec::new();
+            let mut processed_expressions = Vec::new();
+            let mut all_async_functions = Vec::new();
 
-			for expr in expressions {
-				let (expr, await_functions) = handle_expression(cx, expr);
-				all_await_functions.append(&mut await_functions.clone());
+            for expr in expressions {
+                let (expr, async_functions) = handle_expr(cx, expr, false);
+                all_async_functions.append(&mut async_functions.clone());
 
-				// Add comma if we already have and expression
-				if !processed_expressions.is_empty() {
-					processed_expressions.push(TokenTree::Token(span, token::Token::Comma));
-				}
+                // Add comma if we already have and expression
+                if !processed_expressions.is_empty() {
+                    processed_expressions.push(TokenTree::Token(span, token::Token::Comma));
+                }
 
-				processed_expressions.append(&mut expr.to_tokens(cx).clone());
-			}
+                processed_expressions.append(&mut expr.to_tokens(cx).clone());
+            }
 
-            (quote_expr!(cx, $identifier!($processed_expressions)), Vec::new())
+            (quote_expr!(cx, $identifier!($processed_expressions)),
+             all_async_functions)
         } else {
             (quote_expr!(cx, $identifier!($inner_tokens)), Vec::new())
         }
