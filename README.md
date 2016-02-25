@@ -4,7 +4,8 @@ Compiler extension for rust that will enable async code without callbacks.
 
 ![travis build status](https://travis-ci.org/Arubaruba/rust-async.svg)
 
-### Proposed Syntax
+
+### Syntax
 ```rust
 #[async]
 fn foo() {

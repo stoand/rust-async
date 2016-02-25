@@ -4,11 +4,24 @@
 // cargo rustc --bin async_tests -- --pretty=expanded
 // -Z unstable-options -o target/debug/main.expanded.rs
 
-// #[cfg(test)]
+// #[async]
+// fn foo() -> i32 {
+//    let a = 1;
+//    let b = 2;
+//    let b1 = await!(get_b(await!(get_c())));
+//    {
+//        let c = 3;
+//    }
+//    let d = 4;
+//
+//    3234
+// }
+
+fn main() {}
 
 #[async]
 fn simple_return() -> i32 {
-    1
+	1
 }
 
 #[test]
@@ -24,15 +37,47 @@ fn no_return() {
 }
 
 #[test]
-/// Async functions that don't return anything
-/// may be called within synchronous functions
+// Async functions that don't return anything
+// may be called within synchronous functions
 fn test_no_return_in_sync() {
     assert_eq!(no_return(), ());
 }
 
 #[test]
-/// Async functions that don't return anything
-/// may be called within synchronous functions
+// Sync functions may call async functions with return
+// types by providing a callback
 fn test_simple_return_in_sync() {
     simple_return(&|val| assert_eq!(val, (1)));
+}
+
+
+#[async]
+fn add_one(i: i32) -> i32 {
+	i + 1
+}
+
+#[test]
+#[async]
+// The innermost await statement will be processed first
+fn test_nested_awaits() {
+    assert_eq!(await!(add_one(await!(add_one(0)))), 2);
+}
+
+fn borrow_add_one(i: &mut i32) {
+    *i += 1;
+}
+
+#[test]
+fn test_borrow_mut() {
+    let mut i = 0;
+    borrow_add_one(&mut i);
+    borrow_add_one(&mut i);
+
+    assert_eq!(i, 2)
+}
+
+#[test]
+#[async]
+fn test_tup() {
+	let (a, b) = (await!(simple_return()), await!(simple_return()));
 }
