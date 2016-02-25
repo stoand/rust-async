@@ -61,11 +61,11 @@ impl AwaitToCb for Stmt {
                 inner_stmts.extend_from_slice(&mut remaining_stmts);
             }
             
-            let var_ident = con.cx.ident_of(&format!("__RUST_ASYNC_AUTOGEN_CALLBACK{}", num_await_functions - i));
+            let var_ident = con.cx.ident_of(&format!("__rust_async_autogen_callback{}", num_await_functions - i));
 
             // Create callback closure
             let callback =
-                quote_expr!(con.cx, &move |$var_ident| {$inner_stmts});
+                quote_expr!(con.cx, &mut |$var_ident| {$inner_stmts});
 
             // Add the callback to the await functions arguments then converted
             // the function into a statement

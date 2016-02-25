@@ -28,7 +28,6 @@ extern crate rustc_plugin;
 
 use rustc_plugin::Registry;
 use std::boxed::Box;
-use std::vec::Vec;
 use syntax::ast::*;
 use syntax::codemap::Span;
 use syntax::ext::base::{Annotatable, ExtCtxt, SyntaxExtension};
@@ -71,7 +70,7 @@ fn async_attribute(cx: &mut ExtCtxt,
                 // Recreate the function declaration with an additional callback as an input
                 // and a return type of ()
                 let mut inputs = dec.inputs.clone();
-                inputs.push(quote_arg!(cx, __RUST_ASYNC_AUTOGEN_FINAL_CALLBACK: &Fn($ty)));
+                inputs.push(quote_arg!(cx, __rust_async_autogen_final_callback: &Fn($ty)));
 
                 (true, inputs)
             }

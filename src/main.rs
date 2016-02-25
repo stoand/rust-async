@@ -4,24 +4,18 @@
 // cargo rustc --bin async_tests -- --pretty=expanded
 // -Z unstable-options -o target/debug/main.expanded.rs
 
-// #[async]
-// fn foo() -> i32 {
-//    let a = 1;
-//    let b = 2;
-//    let b1 = await!(get_b(await!(get_c())));
-//    {
-//        let c = 3;
-//    }
-//    let d = 4;
-//
-//    3234
-// }
-
 fn main() {}
+
 
 #[async]
 fn simple_return() -> i32 {
 	1
+}
+
+#[async]
+fn foo() {
+    let bar = await!(simple_return());
+    println!("{}", bar);
 }
 
 #[test]
@@ -80,4 +74,5 @@ fn test_borrow_mut() {
 #[async]
 fn test_tup() {
 	let (a, b) = (await!(simple_return()), await!(simple_return()));
+	assert_eq!(a, b);
 }

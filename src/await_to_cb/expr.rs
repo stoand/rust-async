@@ -92,7 +92,7 @@ impl AwaitToCb for P<Expr> {
                 // If this function returns something it will have a final callback
                 // that should be called instead of a sync return
                 if con.final_cb {
-                    quote_expr!(con.cx, __RUST_ASYNC_AUTOGEN_FINAL_CALLBACK($expr)).node.clone()
+                    quote_expr!(con.cx, __rust_async_autogen_final_callback($expr)).node.clone()
                 } else {
                     ExprKind::Ret(Some(expr))
                 }
@@ -117,7 +117,7 @@ impl AwaitToCb for P<Expr> {
                                              parameter\nlike: await!(get_user(1))")
                         }
                     };
-					let var_ident = con.cx.ident_of(&format!("__RUST_ASYNC_AUTOGEN_CALLBACK{}", con.await_functions.len()));
+					let var_ident = con.cx.ident_of(&format!("__rust_async_autogen_callback{}", con.await_functions.len()));
 
                     quote_expr!(con.cx, $var_ident).node.clone()
                 } else {
