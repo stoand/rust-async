@@ -1,5 +1,4 @@
 use std::iter::Iterator;
-use std::slice;
 use std::vec::Vec;
 use syntax::ast::*;
 use syntax::ext::base::ExtCtxt;

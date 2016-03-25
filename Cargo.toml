@@ -5,6 +5,3 @@ authors = [ "Andreas Stocker <shadowstep7@gmail.com>" ]
 
 [lib]
 crate-type = ["dylib"]
-
-[[bin]]
-name="async_tests"

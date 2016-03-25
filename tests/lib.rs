@@ -4,18 +4,9 @@
 // cargo rustc --bin async_tests -- --pretty=expanded
 // -Z unstable-options -o target/debug/main.expanded.rs
 
-fn main() {}
-
-
 #[async]
 fn simple_return() -> i32 {
 	1
-}
-
-#[async]
-fn foo() {
-    let bar = await!(simple_return());
-    println!("{}", bar);
 }
 
 #[test]

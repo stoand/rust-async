@@ -68,8 +68,8 @@ impl AwaitToCb for P<Expr> {
             ExprKind::Index(expr1, expr2) => {
                 ExprKind::Index(expr1.await_to_cb(con), expr2.await_to_cb(con))
             }
-            ExprKind::Range(expr1, expr2) => {
-                ExprKind::Range(expr1.await_to_cb(con), expr2.await_to_cb(con))
+            ExprKind::Range(expr1, expr2, limits) => {
+                ExprKind::Range(expr1.await_to_cb(con), expr2.await_to_cb(con), limits)
             }
             ExprKind::AddrOf(mutability, expr) => ExprKind::AddrOf(mutability, expr.await_to_cb(con)),
             ExprKind::InlineAsm(inline_asm) => {
